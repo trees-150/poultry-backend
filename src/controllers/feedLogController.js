@@ -3,77 +3,46 @@ const db = require('../config/db');
 // Add feed usage (uses a DB transaction)
 const createFeedLog = async (req, res) => {
   const client = await db.pool.connect();
+
   try {
-    const {
-      flock_id,
-      feed_inventory_id,
-      quantity_used,
-      date_used,
-      notes
-    } = req.body;
+    await client.query("BEGIN");
 
-    if (feed_inventory_id === undefined || quantity_used === undefined) {
-      return res.status(400).json({ message: 'feed_inventory_id and quantity_used are required' });
-    }
+    const { flock_id, feed_inventory_id, quantity_used, date_used, notes } = req.body;
 
-    const useQty = Number(quantity_used);
-    if (isNaN(useQty) || useQty <= 0) {
-      return res.status(400).json({ message: 'quantity_used must be a positive number' });
-    }
-
-    await client.query('BEGIN');
-
-    // Check current stock and lock the row to avoid races
-    const stockResult = await client.query(
-      'SELECT quantity FROM feed_inventory WHERE id = $1 FOR UPDATE',
-      [feed_inventory_id]
-    );
-
-    if (stockResult.rowCount === 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: 'feed inventory not found' });
-    }
-
-    const currentStock = Number(stockResult.rows[0].quantity || 0);
-    if (currentStock < useQty) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: 'Not enough feed in stock' });
-    }
-
-    // Insert feed log
-    const insertResult = await client.query(
-      `INSERT INTO feed_log
+    // 1. Insert feed log
+    const logResult = await client.query(
+      `INSERT INTO feed_log 
       (flock_id, feed_inventory_id, quantity_used, date_used, notes)
       VALUES ($1, $2, $3, $4, $5)
       RETURNING *`,
-      [
-        flock_id,
-        feed_inventory_id,
-        useQty,
-        date_used,
-        notes
-      ]
+      [flock_id, feed_inventory_id, quantity_used, date_used, notes]
     );
 
-    // Reduce inventory
+    // 2. Deduct from inventory
     await client.query(
       `UPDATE feed_inventory
-       SET quantity = quantity - $1
+       SET quantity_kg = quantity_kg - $1,
+           updated_at = CURRENT_TIMESTAMP
        WHERE id = $2`,
-      [useQty, feed_inventory_id]
+      [quantity_used, feed_inventory_id]
     );
 
-    await client.query('COMMIT');
+    await client.query("COMMIT");
 
-    res.json(insertResult.rows[0]);
+    res.json({
+      message: "Feed log created and inventory updated",
+      data: logResult.rows[0]
+    });
+
   } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch (rollbackErr) {
-      console.error('Rollback error:', rollbackErr);
-    }
-    console.error('Error creating feed log:', err);
-    res.status(500).json({ message: 'Server error creating feed log' });
+    await client.query("ROLLBACK");
+
+    console.error("Feed log error:", err);
+
+    res.status(500).json({
+      message: "Error creating feed log",
+      error: err.message
+    });
   } finally {
     client.release();
   }
