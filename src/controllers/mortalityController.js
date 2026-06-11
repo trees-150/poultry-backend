@@ -6,7 +6,7 @@ const createMortality = async (req, res) => {
   try {
     const {
       flock_id,
-      date,
+      date_recorded,
       quantity,
       cause,
       notes
@@ -45,10 +45,10 @@ const createMortality = async (req, res) => {
     // Insert mortality record
     const insertResult = await client.query(
       `INSERT INTO mortality
-      (flock_id, date, quantity, cause, notes)
+      (flock_id, date_recorded, quantity, cause, notes)
       VALUES ($1, $2, $3, $4, $5)
       RETURNING *`,
-      [flock_id, date, qty, cause, notes]
+      [flock_id, date_recorded, qty, cause, notes]
     );
 
     // Reduce flock quantity
@@ -82,7 +82,7 @@ const getMortality = async (req, res) => {
       SELECT
         m.id,
         f.name AS flock_name,
-        m.date,
+        m.date_recorded AS date_recorded,
         m.quantity,
         m.cause,
         m.notes,
