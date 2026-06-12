@@ -107,4 +107,73 @@ const getMyFarm = async (req, res) => {
   }
 };
 
-module.exports = { createFarm, getMyFarm };
+const joinFarm = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { invite_code } = req.body;
+    if (!invite_code || typeof invite_code !== 'string') {
+      return res.status(400).json({ message: 'invite_code is required' });
+    }
+
+    await client.query('BEGIN');
+
+    // Ensure user does not already belong to a farm
+    const userRes = await client.query('SELECT farm_id FROM users WHERE id = $1 FOR UPDATE', [user_id]);
+    if (userRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'User not found' });
+    }
+    if (userRes.rows[0].farm_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'User already belongs to a farm' });
+    }
+
+    // Find farm by invite_code
+    const farmRes = await client.query('SELECT id, name FROM farms WHERE invite_code = $1', [invite_code]);
+    if (farmRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Invite code not found' });
+    }
+    const farm = farmRes.rows[0];
+
+    // Set user's farm_id and role = 'member'
+    await client.query('UPDATE users SET farm_id = $1, role = $2 WHERE id = $3', [farm.id, 'member', user_id]);
+
+    await client.query('COMMIT');
+
+    return res.json({ message: 'Successfully joined farm', farm_id: farm.id, farm_name: farm.name, role: 'member' });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Error joining farm:', err);
+    res.status(500).json({ message: 'Server error joining farm' });
+  } finally {
+    client.release();
+  }
+};
+
+const getFarmMembers = async (req, res) => {
+  try {
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+
+    const userRes = await db.query('SELECT farm_id FROM users WHERE id = $1', [user_id]);
+    if (userRes.rowCount === 0) return res.status(404).json({ message: 'User not found' });
+    const farm_id = userRes.rows[0].farm_id;
+    if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
+
+    const membersRes = await db.query(
+      'SELECT id, name, role FROM users WHERE farm_id = $1 ORDER BY id ASC',
+      [farm_id]
+    );
+
+    res.json(membersRes.rows);
+  } catch (err) {
+    console.error('Error fetching farm members:', err);
+    res.status(500).json({ message: 'Server error fetching members' });
+  }
+};
+
+module.exports = { createFarm, getMyFarm, joinFarm, getFarmMembers };
