@@ -11,6 +11,8 @@
     "migrate:create-farms": "node src/scripts/createFarmsTable.js"
     ,
     "migrate:add-user-farm-columns": "node src/scripts/addFarmColumnsToUsers.js"
+    ,
+    "migrate:add-farmid-to-flock": "node src/scripts/addFarmIdToFlock.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
