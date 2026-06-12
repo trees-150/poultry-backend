@@ -13,6 +13,20 @@
     "migrate:add-user-farm-columns": "node src/scripts/addFarmColumnsToUsers.js"
     ,
     "migrate:add-farmid-to-flock": "node src/scripts/addFarmIdToFlock.js"
+    ,
+    "migrate:add-farmid-to-feed-inventory": "node src/scripts/addFarmIdToFeedInventory.js"
+    ,
+    "migrate:add-farmid-to-feed-log": "node src/scripts/addFarmIdToFeedLog.js"
+    ,
+    "migrate:add-farmid-to-mortality": "node src/scripts/addFarmIdToMortality.js"
+    ,
+    "migrate:add-farmid-to-sales": "node src/scripts/addFarmIdToSales.js"
+    ,
+    "migrate:add-farmid-to-expenses": "node src/scripts/addFarmIdToExpenses.js"
+    ,
+    "migrate:add-farmid-to-vaccinations": "node src/scripts/addFarmIdToVaccinations.js"
+    ,
+    "migrate:add-farmid-to-treatments": "node src/scripts/addFarmIdToTreatments.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
