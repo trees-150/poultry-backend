@@ -81,6 +81,7 @@ const getMortality = async (req, res) => {
     const result = await db.query(`
       SELECT
         m.id,
+        m.flock_id,
         f.name AS flock_name,
         m.date_recorded AS date_recorded,
         m.quantity,

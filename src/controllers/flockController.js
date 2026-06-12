@@ -15,21 +15,24 @@ const createFlock = async (req, res) => {
     res.json(result.rows[0]);
   } catch (err) {
     console.error("Error creating flock:", err);
-    res.status(500).json({ message: "Server error creating flock" });
+    res.status(500).json({ message: "Server error creating flock"
+     });
   }
 };
 
 // GET all flocks
 const getFlocks = async (req, res) => {
   try {
-    const result = await db.query(
-      "SELECT * FROM flock ORDER BY id ASC"
-    );
-
+    const result = await db.query("SELECT * FROM flock");
     res.json(result.rows);
+
   } catch (err) {
-    console.error("Error fetching flocks:", err);
-    res.status(500).json({ message: "Server error fetching flocks" });
+    console.error("🔥 FULL FLOCK ERROR:", err);
+    res.status(500).json({
+      message: "Server error fetching flocks",
+      error: err.message,
+      stack: err.stack
+    });
   }
 };
 

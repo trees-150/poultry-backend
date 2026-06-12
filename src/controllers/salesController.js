@@ -3,9 +3,12 @@ const db = require("../config/db");
 // GET sales
 const getSales = async (req, res) => {
   try {
-    const result = await db.query(
-      "SELECT * FROM sales ORDER BY id DESC"
-    );
+    const result = await db.query(`
+      SELECT s.*, f.name AS flock_name
+      FROM sales s
+      JOIN flock f ON s.flock_id = f.id
+      ORDER BY s.id DESC
+    `);
     res.json(result.rows);
   } catch (err) {
     console.error("Error fetching sales:", err);

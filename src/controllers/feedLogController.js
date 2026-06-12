@@ -29,10 +29,26 @@ const createFeedLog = async (req, res) => {
 
     await client.query("COMMIT");
 
-    res.json({
-      message: "Feed log created and inventory updated",
-      data: logResult.rows[0]
-    });
+    // Fetch the complete log with names to return to the app
+    const fullLogResult = await client.query(`
+      SELECT
+        fl.id,
+        fl.flock_id,
+        fl.feed_inventory_id,
+        f.name AS flock_name,
+        fi.feed_name AS feed_name,
+        fi.feed_type,
+        fl.quantity_used,
+        fl.date_used,
+        fl.notes,
+        fl.created_at
+      FROM feed_log fl
+      JOIN flock f ON fl.flock_id = f.id
+      JOIN feed_inventory fi ON fl.feed_inventory_id = fi.id
+      WHERE fl.id = $1
+    `, [logResult.rows[0].id]);
+
+    res.json(fullLogResult.rows[0]);
 
   } catch (err) {
     await client.query("ROLLBACK");
@@ -54,7 +70,10 @@ const getFeedLogs = async (req, res) => {
     const result = await db.query(`
       SELECT
         fl.id,
+        fl.flock_id,
+        fl.feed_inventory_id,
         f.name AS flock_name,
+        fi.feed_name AS feed_name,
         fi.feed_type,
         fl.quantity_used,
         fl.date_used,
