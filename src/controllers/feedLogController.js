@@ -5,26 +5,27 @@ const createFeedLog = async (req, res) => {
   const client = await db.pool.connect();
 
   try {
+    const user_id = req.user && req.user.id;
     await client.query("BEGIN");
 
     const { flock_id, feed_inventory_id, quantity_used, date_used, notes } = req.body;
 
-    // 1. Insert feed log
+    // 1. Insert feed log with user_id
     const logResult = await client.query(
       `INSERT INTO feed_log 
-      (flock_id, feed_inventory_id, quantity_used, date_used, notes)
-      VALUES ($1, $2, $3, $4, $5)
+      (user_id, flock_id, feed_inventory_id, quantity_used, date_used, notes)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *`,
-      [flock_id, feed_inventory_id, quantity_used, date_used, notes]
+      [user_id, flock_id, feed_inventory_id, quantity_used, date_used, notes]
     );
 
-    // 2. Deduct from inventory
+    // 2. Deduct from inventory (ensure inventory belongs to user)
     await client.query(
       `UPDATE feed_inventory
        SET quantity_kg = quantity_kg - $1,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2`,
-      [quantity_used, feed_inventory_id]
+       WHERE id = $2 AND user_id = $3`,
+      [quantity_used, feed_inventory_id, user_id]
     );
 
     await client.query("COMMIT");
@@ -45,8 +46,8 @@ const createFeedLog = async (req, res) => {
       FROM feed_log fl
       JOIN flock f ON fl.flock_id = f.id
       JOIN feed_inventory fi ON fl.feed_inventory_id = fi.id
-      WHERE fl.id = $1
-    `, [logResult.rows[0].id]);
+      WHERE fl.id = $1 AND fl.user_id = $2
+    `, [logResult.rows[0].id, user_id]);
 
     res.json(fullLogResult.rows[0]);
 
@@ -74,7 +75,8 @@ const updateFeedLog = async (req, res) => {
     await client.query("BEGIN");
 
     // Get old log to adjust inventory
-    const oldLogRes = await client.query("SELECT * FROM feed_log WHERE id = $1", [id]);
+    const user_id = req.user && req.user.id;
+    const oldLogRes = await client.query("SELECT * FROM feed_log WHERE id = $1 AND user_id = $2", [id, user_id]);
     if (oldLogRes.rowCount === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Feed log not found" });
@@ -83,23 +85,23 @@ const updateFeedLog = async (req, res) => {
 
     // Restore old quantity to old inventory
     await client.query(
-      "UPDATE feed_inventory SET quantity_kg = quantity_kg + $1 WHERE id = $2",
-      [oldLog.quantity_used, oldLog.feed_inventory_id]
+      "UPDATE feed_inventory SET quantity_kg = quantity_kg + $1 WHERE id = $2 AND user_id = $3",
+      [oldLog.quantity_used, oldLog.feed_inventory_id, user_id]
     );
 
     // Update log
     const updateResult = await client.query(
       `UPDATE feed_log
        SET flock_id = $1, feed_inventory_id = $2, quantity_used = $3, date_used = $4, notes = $5
-       WHERE id = $6
+       WHERE id = $6 AND user_id = $7
        RETURNING *`,
-      [flock_id, feed_inventory_id, quantity_used, date_used, notes, id]
+      [flock_id, feed_inventory_id, quantity_used, date_used, notes, id, user_id]
     );
 
     // Deduct new quantity from new inventory
     await client.query(
-      "UPDATE feed_inventory SET quantity_kg = quantity_kg - $1 WHERE id = $2",
-      [quantity_used, feed_inventory_id]
+      "UPDATE feed_inventory SET quantity_kg = quantity_kg - $1 WHERE id = $2 AND user_id = $3",
+      [quantity_used, feed_inventory_id, user_id]
     );
 
     await client.query("COMMIT");
@@ -120,7 +122,8 @@ const deleteFeedLog = async (req, res) => {
     const { id } = req.params;
     await client.query("BEGIN");
 
-    const logRes = await client.query("SELECT * FROM feed_log WHERE id = $1", [id]);
+    const user_id = req.user && req.user.id;
+    const logRes = await client.query("SELECT * FROM feed_log WHERE id = $1 AND user_id = $2", [id, user_id]);
     if (logRes.rowCount === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Feed log not found" });
@@ -129,11 +132,11 @@ const deleteFeedLog = async (req, res) => {
 
     // Restore inventory
     await client.query(
-      "UPDATE feed_inventory SET quantity_kg = quantity_kg + $1 WHERE id = $2",
-      [log.quantity_used, log.feed_inventory_id]
+      "UPDATE feed_inventory SET quantity_kg = quantity_kg + $1 WHERE id = $2 AND user_id = $3",
+      [log.quantity_used, log.feed_inventory_id, user_id]
     );
 
-    await client.query("DELETE FROM feed_log WHERE id = $1", [id]);
+    await client.query("DELETE FROM feed_log WHERE id = $1 AND user_id = $2", [id, user_id]);
 
     await client.query("COMMIT");
     res.json({ message: "Feed log deleted" });
@@ -149,6 +152,7 @@ const deleteFeedLog = async (req, res) => {
 // Get all feed logs
 const getFeedLogs = async (req, res) => {
   try {
+    const user_id = req.user && req.user.id;
     const result = await db.query(`
       SELECT
         fl.id,
@@ -166,8 +170,9 @@ const getFeedLogs = async (req, res) => {
         ON fl.flock_id = f.id
       JOIN feed_inventory fi
         ON fl.feed_inventory_id = fi.id
+      WHERE fl.user_id = $1
       ORDER BY fl.id DESC
-    `);
+    `, [user_id]);
 
     res.json(result.rows);
   } catch (err) {

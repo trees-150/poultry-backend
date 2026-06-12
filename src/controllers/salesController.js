@@ -3,12 +3,14 @@ const db = require("../config/db");
 // GET sales
 const getSales = async (req, res) => {
   try {
+    const user_id = req.user && req.user.id;
     const result = await db.query(`
       SELECT s.*, f.name AS flock_name
       FROM sales s
       JOIN flock f ON s.flock_id = f.id
+      WHERE s.user_id = $1
       ORDER BY s.id DESC
-    `);
+    `, [user_id]);
     res.json(result.rows);
   } catch (err) {
     console.error("Error fetching sales:", err);
@@ -23,6 +25,7 @@ const getSales = async (req, res) => {
 const createSale = async (req, res) => {
   const client = await db.pool.connect();
   try {
+    const user_id = req.user && req.user.id;
     const {
       flock_id,
       quantity_sold,
@@ -37,23 +40,23 @@ const createSale = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // INSERT sale
+    // INSERT sale (attach user_id)
     const result = await client.query(
       `INSERT INTO sales 
-      (flock_id, quantity_sold, price_per_unit, total_amount, buyer_name, date_sold, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      (user_id, flock_id, quantity_sold, price_per_unit, total_amount, buyer_name, date_sold, notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
       RETURNING *`,
-      [flock_id, qty, price_per_unit, total_amount, buyer_name, date_sold, notes]
+      [user_id, flock_id, qty, price_per_unit, total_amount, buyer_name, date_sold, notes]
     );
 
-    // Decrement flock quantity
-    await client.query('UPDATE flock SET quantity = quantity - $1 WHERE id = $2', [qty, flock_id]);
+    // Decrement flock quantity but ensure flock belongs to same user
+    await client.query('UPDATE flock SET quantity = quantity - $1 WHERE id = $2 AND user_id = $3', [qty, flock_id, user_id]);
 
     await client.query('COMMIT');
 
     const row = result.rows[0];
     if (row) {
-      const flockResult = await db.query("SELECT name FROM flock WHERE id = $1", [flock_id]);
+      const flockResult = await db.query("SELECT name FROM flock WHERE id = $1 AND user_id = $2", [flock_id, user_id]);
       if (flockResult.rowCount > 0) {
         row.flock_name = flockResult.rows[0].name;
       }
@@ -77,9 +80,10 @@ const updateSale = async (req, res) => {
     const qty = Number(quantity_sold);
     const total_amount = qty * Number(price_per_unit || 0);
 
+    const user_id = req.user && req.user.id;
     await client.query('BEGIN');
 
-    const oldRes = await client.query("SELECT * FROM sales WHERE id = $1 FOR UPDATE", [id]);
+    const oldRes = await client.query("SELECT * FROM sales WHERE id = $1 AND user_id = $2 FOR UPDATE", [id, user_id]);
     if (oldRes.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: "Sale not found" });
@@ -87,7 +91,7 @@ const updateSale = async (req, res) => {
     const oldRec = oldRes.rows[0];
 
     // Restore old flock quantity
-    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2", [oldRec.quantity_sold, oldRec.flock_id]);
+    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2 AND user_id = $3", [oldRec.quantity_sold, oldRec.flock_id, user_id]);
 
     // Update sale
     const result = await client.query(
@@ -99,7 +103,7 @@ const updateSale = async (req, res) => {
     );
 
     // Decrement new flock quantity
-    await client.query("UPDATE flock SET quantity = quantity - $1 WHERE id = $2", [qty, flock_id]);
+    await client.query("UPDATE flock SET quantity = quantity - $1 WHERE id = $2 AND user_id = $3", [qty, flock_id, user_id]);
 
     await client.query('COMMIT');
     res.json(result.rows[0]);
@@ -116,9 +120,10 @@ const deleteSale = async (req, res) => {
   const client = await db.pool.connect();
   try {
     const { id } = req.params;
+    const user_id = req.user && req.user.id;
     await client.query('BEGIN');
 
-    const oldRes = await client.query("SELECT * FROM sales WHERE id = $1 FOR UPDATE", [id]);
+    const oldRes = await client.query("SELECT * FROM sales WHERE id = $1 AND user_id = $2 FOR UPDATE", [id, user_id]);
     if (oldRes.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: "Sale not found" });
@@ -126,9 +131,9 @@ const deleteSale = async (req, res) => {
     const oldRec = oldRes.rows[0];
 
     // Restore flock quantity
-    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2", [oldRec.quantity_sold, oldRec.flock_id]);
+    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2 AND user_id = $3", [oldRec.quantity_sold, oldRec.flock_id, user_id]);
 
-    await client.query("DELETE FROM sales WHERE id = $1", [id]);
+    await client.query("DELETE FROM sales WHERE id = $1 AND user_id = $2", [id, user_id]);
 
     await client.query('COMMIT');
     res.json({ message: "Sale deleted" });

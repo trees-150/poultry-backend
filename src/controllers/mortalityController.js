@@ -18,10 +18,11 @@ const createMortality = async (req, res) => {
 
     await client.query('BEGIN');
 
+    const user_id = req.user && req.user.id;
     // Check flock exists and get current quantity (lock row to avoid races)
     const flockResult = await client.query(
-      'SELECT quantity FROM flock WHERE id = $1 FOR UPDATE',
-      [flock_id]
+      'SELECT quantity FROM flock WHERE id = $1 AND user_id = $2 FOR UPDATE',
+      [flock_id, user_id]
     );
 
     if (flockResult.rowCount === 0) {
@@ -47,18 +48,18 @@ const createMortality = async (req, res) => {
     // Insert mortality record
     const insertResult = await client.query(
       `INSERT INTO mortality
-      (flock_id, date_recorded, quantity, cause, notes)
-      VALUES ($1, $2, $3, $4, $5)
+      (user_id, flock_id, date_recorded, quantity, cause, notes)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *`,
-      [flock_id, date_recorded, qty, cause, notes]
+      [user_id, flock_id, date_recorded, qty, cause, notes]
     );
 
     // Reduce flock quantity
     await client.query(
       `UPDATE flock
        SET quantity = quantity - $1
-       WHERE id = $2`,
-      [qty, flock_id]
+       WHERE id = $2 AND user_id = $3`,
+      [qty, flock_id, user_id]
     );
 
     await client.query('COMMIT');
@@ -80,7 +81,8 @@ const updateMortality = async (req, res) => {
 
     await client.query('BEGIN');
 
-    const oldRes = await client.query("SELECT * FROM mortality WHERE id = $1 FOR UPDATE", [id]);
+    const user_id = req.user && req.user.id;
+    const oldRes = await client.query("SELECT * FROM mortality WHERE id = $1 AND user_id = $2 FOR UPDATE", [id, user_id]);
     if (oldRes.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: "Mortality record not found" });
@@ -88,19 +90,19 @@ const updateMortality = async (req, res) => {
     const oldRec = oldRes.rows[0];
 
     // Restore old quantity
-    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2", [oldRec.quantity, oldRec.flock_id]);
+    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2 AND user_id = $3", [oldRec.quantity, oldRec.flock_id, user_id]);
 
     // Update mortality
     const updateResult = await client.query(
       `UPDATE mortality
        SET flock_id = $1, date_recorded = $2, quantity = $3, cause = $4, notes = $5
-       WHERE id = $6
+       WHERE id = $6 AND user_id = $7
        RETURNING *`,
-      [flock_id, date_recorded, quantity, cause, notes, id]
+      [flock_id, date_recorded, quantity, cause, notes, id, user_id]
     );
 
     // Deduct new quantity
-    await client.query("UPDATE flock SET quantity = quantity - $1 WHERE id = $2", [quantity, flock_id]);
+    await client.query("UPDATE flock SET quantity = quantity - $1 WHERE id = $2 AND user_id = $3", [quantity, flock_id, user_id]);
 
     await client.query('COMMIT');
     res.json(updateResult.rows[0]);
@@ -119,7 +121,8 @@ const deleteMortality = async (req, res) => {
     const { id } = req.params;
     await client.query('BEGIN');
 
-    const resOld = await client.query("SELECT * FROM mortality WHERE id = $1 FOR UPDATE", [id]);
+    const user_id = req.user && req.user.id;
+    const resOld = await client.query("SELECT * FROM mortality WHERE id = $1 AND user_id = $2 FOR UPDATE", [id, user_id]);
     if (resOld.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: "Mortality record not found" });
@@ -127,9 +130,9 @@ const deleteMortality = async (req, res) => {
     const oldRec = resOld.rows[0];
 
     // Restore flock quantity
-    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2", [oldRec.quantity, oldRec.flock_id]);
+    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2 AND user_id = $3", [oldRec.quantity, oldRec.flock_id, user_id]);
 
-    await client.query("DELETE FROM mortality WHERE id = $1", [id]);
+    await client.query("DELETE FROM mortality WHERE id = $1 AND user_id = $2", [id, user_id]);
 
     await client.query('COMMIT');
     res.json({ message: "Mortality record deleted" });
@@ -145,6 +148,7 @@ const deleteMortality = async (req, res) => {
 // Get all mortality records
 const getMortality = async (req, res) => {
   try {
+    const user_id = req.user && req.user.id;
     const result = await db.query(`
       SELECT
         m.id,
@@ -158,8 +162,9 @@ const getMortality = async (req, res) => {
       FROM mortality m
       JOIN flock f
         ON m.flock_id = f.id
+      WHERE m.user_id = $1
       ORDER BY m.id DESC
-    `);
+    `, [user_id]);
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching mortality records:', err);

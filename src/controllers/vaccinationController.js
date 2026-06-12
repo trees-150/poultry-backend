@@ -2,14 +2,15 @@ const db = require('../config/db');
 
 const createVaccination = async (req, res) => {
   try {
+    const user_id = req.user && req.user.id;
     const { flock_id, vaccine_name, dosage, date_given, notes } = req.body;
 
     const result = await db.query(
       `INSERT INTO vaccination
-      (flock_id, vaccine_name, dosage, date_given, notes)
-      VALUES ($1,$2,$3,$4,$5)
+      (user_id, flock_id, vaccine_name, dosage, date_given, notes)
+      VALUES ($1,$2,$3,$4,$5,$6)
       RETURNING *`,
-      [flock_id, vaccine_name, dosage, date_given, notes]
+      [user_id, flock_id, vaccine_name, dosage, date_given, notes]
     );
 
     res.json(result.rows[0]);
@@ -21,13 +22,15 @@ const createVaccination = async (req, res) => {
 
 const getVaccinations = async (req, res) => {
   try {
+    const user_id = req.user && req.user.id;
     const result = await db.query(`
       SELECT v.id, v.flock_id, f.name AS flock_name, v.vaccine_name,
              v.dosage, v.date_given, v.notes, v.created_at
       FROM vaccination v
       JOIN flock f ON v.flock_id = f.id
+      WHERE v.user_id = $1
       ORDER BY v.date_given DESC
-    `);
+    `, [user_id]);
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching vaccinations:', err);
@@ -37,15 +40,16 @@ const getVaccinations = async (req, res) => {
 
 const updateVaccination = async (req, res) => {
   try {
+    const user_id = req.user && req.user.id;
     const { id } = req.params;
     const { flock_id, vaccine_name, dosage, date_given, notes } = req.body;
 
     const result = await db.query(
       `UPDATE vaccination
        SET flock_id = $1, vaccine_name = $2, dosage = $3, date_given = $4, notes = $5
-       WHERE id = $6
+       WHERE id = $6 AND user_id = $7
        RETURNING *`,
-      [flock_id, vaccine_name, dosage, date_given, notes, id]
+      [flock_id, vaccine_name, dosage, date_given, notes, id, user_id]
     );
 
     if (result.rowCount === 0) {
@@ -61,8 +65,9 @@ const updateVaccination = async (req, res) => {
 
 const deleteVaccination = async (req, res) => {
   try {
+    const user_id = req.user && req.user.id;
     const { id } = req.params;
-    const result = await db.query("DELETE FROM vaccination WHERE id = $1 RETURNING *", [id]);
+    const result = await db.query("DELETE FROM vaccination WHERE id = $1 AND user_id = $2 RETURNING *", [id, user_id]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({ message: "Vaccination not found" });
