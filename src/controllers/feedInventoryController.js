@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { formatUGX } = require('../utils/currency');
 
 // GET all feed inventory
 const getFeedInventory = async (req, res) => {
@@ -6,7 +7,11 @@ const getFeedInventory = async (req, res) => {
     const result = await db.query(
       "SELECT * FROM feed_inventory ORDER BY id DESC"
     );
-    res.json(result.rows);
+    const formatted = result.rows.map(r => ({
+      ...r,
+      unit_cost: r.unit_cost != null ? formatUGX(r.unit_cost) : r.unit_cost
+    }));
+    res.json(formatted);
   } catch (err) {
     console.error("Error fetching feed inventory:", err);
     res.status(500).json({
@@ -29,7 +34,9 @@ const createFeedInventory = async (req, res) => {
       [feed_name, feed_type, quantity_kg, unit_cost, supplier]
     );
 
-    res.json(result.rows[0]);
+    const row = result.rows[0];
+    if (row) row.unit_cost = row.unit_cost != null ? formatUGX(row.unit_cost) : row.unit_cost;
+    res.json(row);
   } catch (err) {
     console.error("Error creating feed inventory:", err);
     res.status(500).json({

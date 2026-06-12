@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { formatUGX } = require('../utils/currency');
 
 // GET all expenses
 const getExpenses = async (req, res) => {
@@ -6,7 +7,11 @@ const getExpenses = async (req, res) => {
     const result = await db.query(
       "SELECT * FROM expenses ORDER BY expense_date DESC, id DESC"
     );
-    res.json(result.rows);
+    const formatted = result.rows.map(r => ({
+      ...r,
+      amount: r.amount != null ? formatUGX(r.amount) : r.amount
+    }));
+    res.json(formatted);
   } catch (err) {
     console.error("Error fetching expenses:", err);
     res.status(500).json({
@@ -29,7 +34,9 @@ const createExpense = async (req, res) => {
       [category, amount, expense_date, description]
     );
 
-    res.json(result.rows[0]);
+    const row = result.rows[0];
+    if (row) row.amount = row.amount != null ? formatUGX(row.amount) : row.amount;
+    res.json(row);
   } catch (err) {
     console.error("Error creating expense:", err);
     res.status(500).json({

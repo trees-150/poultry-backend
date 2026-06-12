@@ -1,15 +1,18 @@
 const db = require("../config/db");
+const { formatUGX } = require('../utils/currency');
 
 // GET sales
 const getSales = async (req, res) => {
   try {
-    const result = await db.query(`
-      SELECT s.*, f.name AS flock_name
-      FROM sales s
-      JOIN flock f ON s.flock_id = f.id
-      ORDER BY s.id DESC
-    `);
-    res.json(result.rows);
+    const result = await db.query(
+      "SELECT * FROM sales ORDER BY id DESC"
+    );
+    const formatted = result.rows.map(r => ({
+      ...r,
+      price_per_unit: r.price_per_unit != null ? formatUGX(r.price_per_unit) : r.price_per_unit,
+      total_amount: r.total_amount != null ? formatUGX(r.total_amount) : r.total_amount
+    }));
+    res.json(formatted);
   } catch (err) {
     console.error("Error fetching sales:", err);
     res.status(500).json({
@@ -49,7 +52,12 @@ const createSale = async (req, res) => {
       ]
     );
 
-    res.json(result.rows[0]);
+    const row = result.rows[0];
+    if (row) {
+      row.price_per_unit = row.price_per_unit != null ? formatUGX(row.price_per_unit) : row.price_per_unit;
+      row.total_amount = row.total_amount != null ? formatUGX(row.total_amount) : row.total_amount;
+    }
+    res.json(row);
   } catch (err) {
     console.error("Error creating sale:", err);
     res.status(500).json({

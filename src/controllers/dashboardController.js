@@ -29,11 +29,12 @@ const getDashboardSummary = async (req, res) => {
     const revenue = parseFloat(revenueResult.rows[0].revenue);
     const expenses = parseFloat(expenseResult.rows[0].expenses);
     const profit = revenue - expenses;
+    const { formatUGX } = require('../utils/currency');
 
     res.json({
-      revenue,
-      expenses,
-      profit,
+      revenue: formatUGX(revenue),
+      expenses: formatUGX(expenses),
+      profit: formatUGX(profit),
       flock_count: flockResult.rows[0].flock_count,
       feed_stock: feedResult.rows[0].feed_stock
     });

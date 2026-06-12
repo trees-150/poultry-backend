@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { formatUGX } = require('../utils/currency');
 
 const createTreatment = async (req, res) => {
   try {
@@ -12,7 +13,9 @@ const createTreatment = async (req, res) => {
       [flock_id, disease, medication, cost, date_given, notes]
     );
 
-    res.json(result.rows[0]);
+    const row = result.rows[0];
+    if (row) row.cost = row.cost != null ? formatUGX(row.cost) : row.cost;
+    res.json(row);
   } catch (err) {
     console.error('Error creating treatment:', err);
     res.status(500).json({ message: 'Server error creating treatment', error: err.message });
@@ -29,7 +32,12 @@ const getTreatments = async (req, res) => {
       ORDER BY t.date_given DESC
     `);
 
-    res.json(result.rows);
+    const formatted = result.rows.map(r => ({
+      ...r,
+      cost: r.cost != null ? formatUGX(r.cost) : r.cost
+    }));
+
+    res.json(formatted);
   } catch (err) {
     console.error('Error fetching treatments:', err);
     res.status(500).json({ message: 'Server error fetching treatments' });
