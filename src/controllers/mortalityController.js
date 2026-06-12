@@ -18,14 +18,15 @@ const createMortality = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Check flock exists and get current quantity
+    // Check flock exists and get current quantity (lock row to avoid races)
     const flockResult = await client.query(
-      'SELECT quantity FROM flock WHERE id = $1',
+      'SELECT quantity FROM flock WHERE id = $1 FOR UPDATE',
       [flock_id]
     );
 
     if (flockResult.rowCount === 0) {
       await client.query('ROLLBACK');
+      console.error(`Mortality error: flock not found (flock_id=${flock_id})`);
       return res.status(404).json({ message: 'Flock not found' });
     }
 
@@ -34,11 +35,13 @@ const createMortality = async (req, res) => {
 
     if (isNaN(qty) || qty <= 0) {
       await client.query('ROLLBACK');
+      console.error(`Mortality validation failed: invalid quantity (flock_id=${flock_id} quantity=${quantity})`);
       return res.status(400).json({ message: 'quantity must be a positive number' });
     }
 
     if (qty > currentQuantity) {
       await client.query('ROLLBACK');
+      console.error(`Mortality validation failed: insufficient flock quantity (flock_id=${flock_id} current=${currentQuantity} attempted=${qty})`);
       return res.status(400).json({ message: 'Mortality exceeds current flock size' });
     }
 
@@ -68,8 +71,8 @@ const createMortality = async (req, res) => {
     } catch (rollbackErr) {
       console.error('Rollback error:', rollbackErr);
     }
-    console.error('Error creating mortality record:', err);
-    res.status(500).json({ message: 'Server error creating mortality record' });
+    console.error(`Error creating mortality record (flock_id=${req.body?.flock_id} quantity=${req.body?.quantity}):`, err);
+    res.status(500).json({ message: 'Server error creating mortality record', error: err.message });
   } finally {
     client.release();
   }
