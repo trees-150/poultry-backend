@@ -11,6 +11,7 @@ function generateInviteCode() {
 }
 
 const createFarm = async (req, res) => {
+  const client = await db.pool.connect();
   try {
     const user_id = req.user && req.user.id;
     if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
@@ -20,36 +21,90 @@ const createFarm = async (req, res) => {
       return res.status(400).json({ message: 'Farm name is required' });
     }
 
+    await client.query('BEGIN');
+
     // Try to insert a unique invite_code; loop on conflict
     let attempts = 0;
     const maxAttempts = 5;
+    let inserted = null;
     while (attempts < maxAttempts) {
       attempts += 1;
       const invite_code = generateInviteCode();
       try {
-        const result = await db.query(
+        const result = await client.query(
           `INSERT INTO farms (name, invite_code, created_by)
            VALUES ($1, $2, $3)
            RETURNING id, name, invite_code`,
           [name.trim(), invite_code, user_id]
         );
-        return res.status(201).json(result.rows[0]);
+        inserted = result.rows[0];
+
+        // set user's farm_id and role = 'owner'
+        await client.query(
+          `UPDATE users SET farm_id = $1, role = $2 WHERE id = $3`,
+          [inserted.id, 'owner', user_id]
+        );
+
+        break;
       } catch (err) {
         // If invite_code conflict, retry; otherwise bubble up
         if (err && err.code === '23505') {
-          // conflict on unique invite_code, try again
           continue;
         }
         console.error('Error creating farm:', err);
+        await client.query('ROLLBACK');
         return res.status(500).json({ message: 'Server error creating farm' });
       }
     }
 
-    return res.status(500).json({ message: 'Could not generate unique invite code' });
+    if (!inserted) {
+      await client.query('ROLLBACK');
+      return res.status(500).json({ message: 'Could not generate unique invite code' });
+    }
+
+    await client.query('COMMIT');
+    return res.status(201).json(inserted);
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
     console.error('Unexpected error creating farm:', err);
     res.status(500).json({ message: 'Server error creating farm' });
+  } finally {
+    client.release();
   }
 };
 
-module.exports = { createFarm };
+const getMyFarm = async (req, res) => {
+  try {
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+
+    const result = await db.query(
+      `SELECT u.farm_id, u.role, f.name AS farm_name, f.invite_code
+       FROM users u
+       LEFT JOIN farms f ON u.farm_id = f.id
+       WHERE u.id = $1`,
+      [user_id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(200).json({ farm_id: null, role: null });
+    }
+
+    const row = result.rows[0];
+    if (!row.farm_id) {
+      return res.status(200).json({ farm_id: null, role: null });
+    }
+
+    res.json({
+      farm_id: row.farm_id,
+      farm_name: row.farm_name,
+      invite_code: row.invite_code,
+      role: row.role
+    });
+  } catch (err) {
+    console.error('Error fetching my farm:', err);
+    res.status(500).json({ message: 'Server error fetching farm' });
+  }
+};
+
+module.exports = { createFarm, getMyFarm };

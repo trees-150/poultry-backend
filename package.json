@@ -9,6 +9,8 @@
     "migrate:create-users": "node src/scripts/createUsersAndAddUserColumns.js"
     ,
     "migrate:create-farms": "node src/scripts/createFarmsTable.js"
+    ,
+    "migrate:add-user-farm-columns": "node src/scripts/addFarmColumnsToUsers.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
