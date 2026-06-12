@@ -39,7 +39,57 @@ const createExpense = async (req, res) => {
   }
 };
 
+// UPDATE expense
+const updateExpense = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { category, amount, expense_date, description } = req.body;
+
+    const result = await db.query(
+      `UPDATE expenses
+       SET category = $1, amount = $2, expense_date = $3, description = $4
+       WHERE id = $5
+       RETURNING *`,
+      [category, amount, expense_date, description, id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Expense not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Error updating expense:", err);
+    res.status(500).json({
+      message: "Server error updating expense",
+      error: err.message
+    });
+  }
+};
+
+// DELETE expense
+const deleteExpense = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await db.query("DELETE FROM expenses WHERE id = $1 RETURNING *", [id]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Expense not found" });
+    }
+
+    res.json({ message: "Expense deleted", data: result.rows[0] });
+  } catch (err) {
+    console.error("Error deleting expense:", err);
+    res.status(500).json({
+      message: "Server error deleting expense",
+      error: err.message
+    });
+  }
+};
+
 module.exports = {
   getExpenses,
-  createExpense
+  createExpense,
+  updateExpense,
+  deleteExpense
 };

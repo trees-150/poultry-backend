@@ -41,7 +41,6 @@ const createMortality = async (req, res) => {
 
     if (qty > currentQuantity) {
       await client.query('ROLLBACK');
-      console.error(`Mortality validation failed: insufficient flock quantity (flock_id=${flock_id} current=${currentQuantity} attempted=${qty})`);
       return res.status(400).json({ message: 'Mortality exceeds current flock size' });
     }
 
@@ -63,16 +62,81 @@ const createMortality = async (req, res) => {
     );
 
     await client.query('COMMIT');
-
     res.json(insertResult.rows[0]);
   } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch (rollbackErr) {
-      console.error('Rollback error:', rollbackErr);
-    }
-    console.error(`Error creating mortality record (flock_id=${req.body?.flock_id} quantity=${req.body?.quantity}):`, err);
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error(`Error creating mortality record:`, err);
     res.status(500).json({ message: 'Server error creating mortality record', error: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+const updateMortality = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const { id } = req.params;
+    const { flock_id, date_recorded, quantity, cause, notes } = req.body;
+
+    await client.query('BEGIN');
+
+    const oldRes = await client.query("SELECT * FROM mortality WHERE id = $1 FOR UPDATE", [id]);
+    if (oldRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: "Mortality record not found" });
+    }
+    const oldRec = oldRes.rows[0];
+
+    // Restore old quantity
+    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2", [oldRec.quantity, oldRec.flock_id]);
+
+    // Update mortality
+    const updateResult = await client.query(
+      `UPDATE mortality
+       SET flock_id = $1, date_recorded = $2, quantity = $3, cause = $4, notes = $5
+       WHERE id = $6
+       RETURNING *`,
+      [flock_id, date_recorded, quantity, cause, notes, id]
+    );
+
+    // Deduct new quantity
+    await client.query("UPDATE flock SET quantity = quantity - $1 WHERE id = $2", [quantity, flock_id]);
+
+    await client.query('COMMIT');
+    res.json(updateResult.rows[0]);
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Error updating mortality record:', err);
+    res.status(500).json({ message: 'Server error updating mortality record' });
+  } finally {
+    client.release();
+  }
+};
+
+const deleteMortality = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const { id } = req.params;
+    await client.query('BEGIN');
+
+    const resOld = await client.query("SELECT * FROM mortality WHERE id = $1 FOR UPDATE", [id]);
+    if (resOld.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: "Mortality record not found" });
+    }
+    const oldRec = resOld.rows[0];
+
+    // Restore flock quantity
+    await client.query("UPDATE flock SET quantity = quantity + $1 WHERE id = $2", [oldRec.quantity, oldRec.flock_id]);
+
+    await client.query("DELETE FROM mortality WHERE id = $1", [id]);
+
+    await client.query('COMMIT');
+    res.json({ message: "Mortality record deleted" });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Error deleting mortality record:', err);
+    res.status(500).json({ message: 'Server error deleting mortality record' });
   } finally {
     client.release();
   }
@@ -96,19 +160,16 @@ const getMortality = async (req, res) => {
         ON m.flock_id = f.id
       ORDER BY m.id DESC
     `);
-
     res.json(result.rows);
-
   } catch (err) {
     console.error('Error fetching mortality records:', err);
-
-    res.status(500).json({
-      message: 'Server error fetching mortality records'
-    });
+    res.status(500).json({ message: 'Server error fetching mortality records' });
   }
 };
 
 module.exports = {
   createMortality,
-  getMortality
+  getMortality,
+  updateMortality,
+  deleteMortality
 };

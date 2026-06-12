@@ -1,13 +1,10 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
+const { getFeedInventory, createFeedInventory, updateFeedInventory, deleteFeedInventory } = require('../controllers/feedInventoryController');
 
-const {
-  getFeedInventory,
-  createFeedInventory
-} = require("../controllers/feedInventoryController");
-
-router.get("/", getFeedInventory);
-router.post("/", createFeedInventory);
+router.get('/', getFeedInventory);
+router.post('/', createFeedInventory);
+router.put('/:id', updateFeedInventory);
+router.delete('/:id', deleteFeedInventory);
 
 module.exports = router;
-
