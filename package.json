@@ -7,6 +7,8 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "migrate:create-users": "node src/scripts/createUsersAndAddUserColumns.js"
+    ,
+    "migrate:create-farms": "node src/scripts/createFarmsTable.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

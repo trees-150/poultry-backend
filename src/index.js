@@ -19,6 +19,8 @@ const auth = require('./middleware/auth');
 app.use('/api/animals', require('./routes/animalRoutes'));
 app.use('/api/eggs', require('./routes/eggRoutes'));
 app.use('/api/flocks', auth, require('./routes/flockRoutes'));
+const farmRoutes = require('./routes/farmRoutes');
+app.use('/api/farms', auth, farmRoutes);
 const feedInventoryRoutes = require('./routes/feedInventoryRoutes');
 app.use('/api/feed-inventory', auth, feedInventoryRoutes);
 const feedLogRoutes = require('./routes/feedLogRoutes');
