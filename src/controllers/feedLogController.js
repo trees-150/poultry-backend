@@ -315,9 +315,4 @@ const getFeedLogs = async (req, res) => {
     restoreFeedLog
   };
 
-module.exports = {
-  createFeedLog,
-  updateFeedLog,
-  deleteFeedLog,
-  getFeedLogs
-};
+// exports are defined above including restoreFeedLog
