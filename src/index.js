@@ -14,6 +14,11 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
 
+// Lightweight ping endpoint to wake sleeping free-tier hosts
+app.get('/api/ping', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
 // Routes
 // Auth (unprotected)
 app.use('/api/auth', require('./routes/authRoutes'));
