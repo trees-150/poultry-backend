@@ -14,7 +14,7 @@ const getSales = async (req, res) => {
       SELECT s.*, f.name AS flock_name
       FROM sales s
       JOIN flock f ON s.flock_id = f.id
-      WHERE s.farm_id = $1
+      WHERE s.farm_id = $1 AND COALESCE(s.is_deleted, false) = false
       ORDER BY s.id DESC
     `, [farm_id]);
     res.json(result.rows);
@@ -74,13 +74,23 @@ const createSale = async (req, res) => {
     const row = insertRes.rows[0];
     row.flock_name = flock.name;
 
-    // Create sale notification (farm-wide)
+    // Create sale notification and activity (farm-wide)
     try {
       const notifications = require('../utils/notifications');
+      const activity = require('../utils/activity');
       const msg = `Sale recorded: ${qty} unit(s) from ${flock.name} for ${total_amount}.`;
       await notifications.createNotification({ farm_id, title: 'Sale Recorded', message: msg, type: 'sale' });
+      const uRes = await db.query('SELECT name FROM users WHERE id = $1', [userId]);
+      const userName = uRes.rowCount > 0 ? uRes.rows[0].name : 'A user';
+      await activity.createActivity({
+        farm_id,
+        user_id: userId,
+        activity_type: 'SALE_RECORDED',
+        title: 'Sale Recorded',
+        description: `${userName} recorded sale of ${qty} birds from ${flock.name}.`
+      });
     } catch (nerr) {
-      console.error('Error creating sale notification:', nerr);
+      console.error('Error creating sale notification/activity:', nerr);
     }
 
     res.json(row);
@@ -193,7 +203,7 @@ const deleteSale = async (req, res) => {
     await client.query('SELECT id FROM flock WHERE id = $1 AND farm_id = $2 FOR UPDATE', [oldRec.flock_id, farm_id]);
     await client.query('UPDATE flock SET quantity = quantity + $1 WHERE id = $2 AND farm_id = $3', [oldRec.quantity_sold, oldRec.flock_id, farm_id]);
 
-    await client.query('DELETE FROM sales WHERE id = $1 AND farm_id = $2', [id, farm_id]);
+    await client.query('UPDATE sales SET is_deleted = true, deleted_at = NOW() WHERE id = $1 AND farm_id = $2', [id, farm_id]);
 
     await client.query('COMMIT');
     res.json({ message: 'Sale deleted' });
@@ -206,4 +216,39 @@ const deleteSale = async (req, res) => {
   }
 };
 
-module.exports = { getSales, createSale, updateSale, deleteSale };
+const restoreSale = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const userId = req.user && req.user.id;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const userRes = await db.query('SELECT farm_id FROM users WHERE id = $1', [userId]);
+    const farm_id = userRes.rows[0] && userRes.rows[0].farm_id;
+    if (!farm_id) return res.status(403).json({ message: 'User must belong to a farm' });
+
+    const { id } = req.params;
+    await client.query('BEGIN');
+
+    const oldRes = await client.query('SELECT * FROM sales WHERE id = $1 AND farm_id = $2 FOR UPDATE', [id, farm_id]);
+    if (oldRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Sale not found' });
+    }
+    const oldRec = oldRes.rows[0];
+
+    // Restore flock quantity reduction when sale was originally created -- ensure flock exists
+    await client.query('UPDATE flock SET quantity = quantity - $1 WHERE id = $2 AND farm_id = $3', [oldRec.quantity_sold, oldRec.flock_id, farm_id]);
+
+    const resu = await client.query('UPDATE sales SET is_deleted = false, deleted_at = NULL WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
+    await client.query('COMMIT');
+    res.json({ message: 'Sale restored', data: resu.rows[0] });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Error restoring sale:', err);
+    res.status(500).json({ message: 'Server error restoring sale', error: err.message });
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { getSales, createSale, updateSale, deleteSale, restoreSale };

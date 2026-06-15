@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "migrate:add-soft-delete": "node src/scripts/addSoftDeleteColumns.js",
     "dev": "nodemon src/index.js",
     "migrate:create-users": "node src/scripts/createUsersAndAddUserColumns.js"
     ,

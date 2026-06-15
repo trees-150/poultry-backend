@@ -38,6 +38,21 @@ const createTreatment = async (req, res) => {
 
     await client.query('COMMIT');
     console.info(`Treatment created user=${userId} farm=${farm_id} flock=${flock_id} disease=${disease}`);
+    try {
+      const activity = require('../utils/activity');
+      const userRes = await db.query('SELECT name FROM users WHERE id = $1', [userId]);
+      const userName = userRes.rowCount > 0 ? userRes.rows[0].name : 'A user';
+      await activity.createActivity({
+        farm_id,
+        user_id: userId,
+        activity_type: 'TREATMENT_RECORDED',
+        title: 'Treatment Recorded',
+        description: `${userName} recorded treatment '${medication}' for flock ${flock_id}.`
+      });
+    } catch (e) {
+      console.error('Activity logging failed for treatment:', e);
+    }
+
     res.json(result.rows[0]);
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}
@@ -63,7 +78,7 @@ const getTreatments = async (req, res) => {
              t.cost, t.date_given, t.notes, t.created_at
       FROM treatment t
       JOIN flock f ON t.flock_id = f.id
-      WHERE t.farm_id = $1
+      WHERE t.farm_id = $1 AND COALESCE(t.is_deleted, false) = false
       ORDER BY t.date_given DESC
     `, [farm_id]);
     res.json(result.rows);
@@ -138,15 +153,32 @@ const deleteTreatment = async (req, res) => {
     if (!farm_id) return res.status(403).json({ message: 'User must belong to a farm' });
 
     const { id } = req.params;
-    const result = await db.query('DELETE FROM treatment WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
-
+    const result = await db.query('UPDATE treatment SET is_deleted = true, deleted_at = NOW() WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
     if (result.rowCount === 0) return res.status(404).json({ message: 'Treatment not found' });
-    console.info(`Treatment deleted id=${id} farm=${farm_id} user=${userId}`);
-    res.json({ message: 'Treatment deleted', data: result.rows[0] });
+    console.info(`Treatment archived id=${id} farm=${farm_id} user=${userId}`);
+    res.json({ message: 'Treatment archived', data: result.rows[0] });
   } catch (err) {
     console.error('Error deleting treatment:', err);
     res.status(500).json({ message: 'Server error deleting treatment', error: err.message });
   }
 };
 
-module.exports = { createTreatment, getTreatments, updateTreatment, deleteTreatment };
+const restoreTreatment = async (req, res) => {
+  try {
+    const userId = req.user && req.user.id;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    const userRes = await db.query('SELECT farm_id FROM users WHERE id = $1', [userId]);
+    const farm_id = userRes.rows[0] && userRes.rows[0].farm_id;
+    if (!farm_id) return res.status(403).json({ message: 'User must belong to a farm' });
+
+    const { id } = req.params;
+    const result = await db.query('UPDATE treatment SET is_deleted = false, deleted_at = NULL WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Treatment not found' });
+    res.json({ message: 'Treatment restored', data: result.rows[0] });
+  } catch (err) {
+    console.error('Error restoring treatment:', err);
+    res.status(500).json({ message: 'Server error restoring treatment', error: err.message });
+  }
+}
+
+module.exports = { createTreatment, getTreatments, updateTreatment, deleteTreatment, restoreTreatment };

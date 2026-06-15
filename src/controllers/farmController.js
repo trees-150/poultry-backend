@@ -155,6 +155,14 @@ const joinFarm = async (req, res) => {
         message: `${userName} joined the farm.`,
         type: 'member_joined'
       });
+      const activity = require('../utils/activity');
+      await activity.createActivity({
+        farm_id: farm.id,
+        user_id: user_id,
+        activity_type: 'FARM_MEMBER_JOINED',
+        title: 'Farm Member Joined',
+        description: `${userName} joined the farm.`
+      });
     } catch (nerr) {
       console.error('Error creating member joined notification:', nerr);
     }

@@ -17,7 +17,7 @@ const getFeedInventory = async (req, res) => {
     if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
 
     const result = await db.query(
-      'SELECT * FROM feed_inventory WHERE farm_id = $1 ORDER BY id DESC',
+      'SELECT * FROM feed_inventory WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false ORDER BY id DESC',
       [farm_id]
     );
     res.json(result.rows);
@@ -45,6 +45,21 @@ const createFeedInventory = async (req, res) => {
       RETURNING *`,
       [farm_id, feed_name, feed_type, quantity_kg, unit_cost, supplier]
     );
+
+    try {
+      const activity = require('../utils/activity');
+      const userRes = await db.query('SELECT name FROM users WHERE id = $1', [user_id]);
+      const userName = userRes.rowCount > 0 ? userRes.rows[0].name : 'A user';
+      await activity.createActivity({
+        farm_id,
+        user_id,
+        activity_type: 'FEED_ADDED',
+        title: 'Feed Added',
+        description: `${userName} added ${quantity_kg}kg of ${feed_name}.`
+      });
+    } catch (e) {
+      console.error('Activity logging failed for feed add:', e);
+    }
 
     res.json(result.rows[0]);
   } catch (err) {
@@ -94,22 +109,37 @@ const deleteFeedInventory = async (req, res) => {
     const farm_id = await getUserFarmId(user_id);
     if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
 
-    const result = await db.query('DELETE FROM feed_inventory WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
-
+    const result = await db.query('UPDATE feed_inventory SET is_deleted = true, deleted_at = NOW() WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ message: 'Feed inventory not found or does not belong to your farm' });
     }
-
-    res.json({ message: 'Feed inventory deleted', data: result.rows[0] });
+    res.json({ message: 'Feed inventory archived', data: result.rows[0] });
   } catch (err) {
     console.error('Error deleting feed inventory:', err);
     res.status(500).json({ message: 'Server error deleting feed inventory', error: err.message });
   }
 };
+const restoreFeedInventory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+    const farm_id = await getUserFarmId(user_id);
+    if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
+
+    const result = await db.query('UPDATE feed_inventory SET is_deleted = false, deleted_at = NULL WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Feed inventory not found' });
+    res.json({ message: 'Feed inventory restored', data: result.rows[0] });
+  } catch (err) {
+    console.error('Error restoring feed inventory:', err);
+    res.status(500).json({ message: 'Server error restoring feed inventory', error: err.message });
+  }
+}
 
 module.exports = {
   getFeedInventory,
   createFeedInventory,
   updateFeedInventory,
-  deleteFeedInventory
+  deleteFeedInventory,
+  restoreFeedInventory
 };

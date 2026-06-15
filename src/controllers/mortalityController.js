@@ -62,7 +62,7 @@ const createMortality = async (req, res) => {
 
     // After commit, check today's mortality total for farm and create alert if threshold exceeded
     try {
-      const mRes = await db.query('SELECT COALESCE(SUM(quantity),0) AS total FROM mortality WHERE farm_id = $1 AND DATE(date_recorded) = CURRENT_DATE', [farm_id]);
+      const mRes = await db.query('SELECT COALESCE(SUM(quantity),0) AS total FROM mortality WHERE farm_id = $1 AND DATE(date_recorded) = CURRENT_DATE AND COALESCE(is_deleted,false)=false', [farm_id]);
       const totalToday = Number(mRes.rows[0].total || 0);
       const mortalityThreshold = process.env.MORTALITY_ALERT_THRESHOLD ? Number(process.env.MORTALITY_ALERT_THRESHOLD) : 5;
       if (!isNaN(mortalityThreshold) && totalToday >= mortalityThreshold) {
@@ -75,6 +75,22 @@ const createMortality = async (req, res) => {
       }
     } catch (nerr) {
       console.error('Error creating mortality notification:', nerr);
+    }
+
+    // Create activity record for mortality
+    try {
+      const activity = require('../utils/activity');
+      const userRes = await db.query('SELECT name FROM users WHERE id = $1', [user_id]);
+      const userName = userRes.rowCount > 0 ? userRes.rows[0].name : 'A user';
+      await activity.createActivity({
+        farm_id,
+        user_id,
+        activity_type: 'MORTALITY_RECORDED',
+        title: 'Mortality Recorded',
+        description: `${userName} recorded ${qty} mortality for flock ${flock_id}.`
+      });
+    } catch (e) {
+      console.error('Activity logging failed for mortality:', e);
     }
 
     res.json(insertResult.rows[0]);
@@ -177,10 +193,10 @@ const deleteMortality = async (req, res) => {
     // Restore flock quantity (ensure same farm)
     await client.query('UPDATE flock SET quantity = quantity + $1 WHERE id = $2 AND farm_id = $3', [oldRec.quantity, oldRec.flock_id, farm_id]);
 
-    await client.query('DELETE FROM mortality WHERE id = $1 AND farm_id = $2', [id, farm_id]);
+    await client.query('UPDATE mortality SET is_deleted = true, deleted_at = NOW() WHERE id = $1 AND farm_id = $2', [id, farm_id]);
 
     await client.query('COMMIT');
-    res.json({ message: 'Mortality record deleted' });
+    res.json({ message: 'Mortality record archived' });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}
     console.error('Error deleting mortality record:', err);
@@ -190,10 +206,14 @@ const deleteMortality = async (req, res) => {
   }
 };
 
-// Get all mortality records
+// Get all mortality records (farm-scoped)
 const getMortality = async (req, res) => {
   try {
     const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+    const farm_id = await getUserFarmId(user_id);
+    if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
+
     const result = await db.query(`
       SELECT
         m.id,
@@ -207,9 +227,9 @@ const getMortality = async (req, res) => {
       FROM mortality m
       JOIN flock f
         ON m.flock_id = f.id
-      WHERE m.user_id = $1
+      WHERE m.farm_id = $1 AND COALESCE(m.is_deleted,false)=false
       ORDER BY m.id DESC
-    `, [user_id]);
+    `, [farm_id]);
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching mortality records:', err);
@@ -217,9 +237,62 @@ const getMortality = async (req, res) => {
   }
 };
 
+const restoreMortality = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+    const farm_id = await getUserFarmId(user_id);
+    if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
+
+    const { id } = req.params;
+    await client.query('BEGIN');
+
+    const resOld = await client.query('SELECT * FROM mortality WHERE id = $1 AND farm_id = $2 AND COALESCE(is_deleted,false)=true FOR UPDATE', [id, farm_id]);
+    if (resOld.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Mortality record not found or not archived' });
+    }
+    const oldRec = resOld.rows[0];
+
+    // Lock flock and ensure it belongs to farm
+    const flockRes = await client.query('SELECT quantity, farm_id FROM flock WHERE id = $1 FOR UPDATE', [oldRec.flock_id]);
+    if (flockRes.rowCount === 0 || flockRes.rows[0].farm_id !== farm_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Associated flock not found or does not belong to your farm' });
+    }
+
+    const currentQty = Number(flockRes.rows[0].quantity || 0);
+    const qtyToRestore = Number(oldRec.quantity || 0);
+    if (isNaN(qtyToRestore) || qtyToRestore <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Invalid mortality quantity to restore' });
+    }
+    if (currentQty < qtyToRestore) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Insufficient flock quantity to restore mortality' });
+    }
+
+    // Deduct quantity from flock (reverse the archive)
+    await client.query('UPDATE flock SET quantity = quantity - $1 WHERE id = $2 AND farm_id = $3', [qtyToRestore, oldRec.flock_id, farm_id]);
+
+    const upd = await client.query('UPDATE mortality SET is_deleted = false, deleted_at = NULL WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
+
+    await client.query('COMMIT');
+    res.json({ message: 'Mortality record restored', data: upd.rows[0] });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Error restoring mortality record:', err);
+    res.status(500).json({ message: 'Server error restoring mortality record', error: err.message });
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   createMortality,
   getMortality,
   updateMortality,
-  deleteMortality
+  deleteMortality,
+  restoreMortality
 };

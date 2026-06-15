@@ -10,15 +10,15 @@ const getDashboardSummary = async (req, res) => {
     if (!farm_id) return res.status(403).json({ message: 'User must belong to a farm' });
 
     const q = `SELECT
-      (SELECT COUNT(*) FROM flock WHERE farm_id = $1) AS total_flocks,
-      (SELECT COALESCE(SUM(quantity),0) FROM flock WHERE farm_id = $1) AS total_birds,
-      (SELECT COALESCE(SUM(quantity_kg),0) FROM feed_inventory WHERE farm_id = $1) AS total_feed_inventory,
-      (SELECT COALESCE(SUM(quantity_used),0) FROM feed_log WHERE farm_id = $1) AS total_feed_used,
-      (SELECT COALESCE(SUM(quantity),0) FROM mortality WHERE farm_id = $1) AS total_mortality,
-      (SELECT COUNT(*) FROM vaccination WHERE farm_id = $1) AS total_vaccinations,
-      (SELECT COUNT(*) FROM treatment WHERE farm_id = $1) AS total_treatments,
-      (SELECT COALESCE(SUM(total_amount),0) FROM sales WHERE farm_id = $1) AS total_sales_amount,
-      (SELECT COALESCE(SUM(amount),0) FROM expenses WHERE farm_id = $1) AS total_expenses_amount
+      (SELECT COUNT(*) FROM flock WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_flocks,
+      (SELECT COALESCE(SUM(quantity),0) FROM flock WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_birds,
+      (SELECT COALESCE(SUM(quantity_kg),0) FROM feed_inventory WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_feed_inventory,
+      (SELECT COALESCE(SUM(quantity_used),0) FROM feed_log WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_feed_used,
+      (SELECT COALESCE(SUM(quantity),0) FROM mortality WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_mortality,
+      (SELECT COUNT(*) FROM vaccination WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_vaccinations,
+      (SELECT COUNT(*) FROM treatment WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_treatments,
+      (SELECT COALESCE(SUM(total_amount),0) FROM sales WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_sales_amount,
+      (SELECT COALESCE(SUM(amount),0) FROM expenses WHERE farm_id = $1 AND COALESCE(is_deleted,false)=false) AS total_expenses_amount
     `;
 
     const agg = await db.query(q, [farm_id]);

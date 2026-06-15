@@ -38,6 +38,21 @@ const createVaccination = async (req, res) => {
 
     await client.query('COMMIT');
     console.info(`Vaccination created user=${userId} farm=${farm_id} flock=${flock_id} vaccine=${vaccine_name}`);
+    try {
+      const activity = require('../utils/activity');
+      const userRes = await db.query('SELECT name FROM users WHERE id = $1', [userId]);
+      const userName = userRes.rowCount > 0 ? userRes.rows[0].name : 'A user';
+      await activity.createActivity({
+        farm_id,
+        user_id: userId,
+        activity_type: 'VACCINATION_RECORDED',
+        title: 'Vaccination Recorded',
+        description: `${userName} recorded vaccination '${vaccine_name}' for flock ${flock_id}.`
+      });
+    } catch (e) {
+      console.error('Activity logging failed for vaccination:', e);
+    }
+
     res.json(result.rows[0]);
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}
@@ -63,7 +78,7 @@ const getVaccinations = async (req, res) => {
              v.dosage, v.date_given, v.notes, v.created_at
       FROM vaccination v
       JOIN flock f ON v.flock_id = f.id
-      WHERE v.farm_id = $1
+      WHERE v.farm_id = $1 AND COALESCE(v.is_deleted, false) = false
       ORDER BY v.date_given DESC
     `, [farm_id]);
     res.json(result.rows);
@@ -138,15 +153,33 @@ const deleteVaccination = async (req, res) => {
     if (!farm_id) return res.status(403).json({ message: 'User must belong to a farm' });
 
     const { id } = req.params;
-    const result = await db.query('DELETE FROM vaccination WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
-
+    const result = await db.query('UPDATE vaccination SET is_deleted = true, deleted_at = NOW() WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
     if (result.rowCount === 0) return res.status(404).json({ message: 'Vaccination not found' });
-    console.info(`Vaccination deleted id=${id} farm=${farm_id} user=${userId}`);
-    res.json({ message: 'Vaccination deleted', data: result.rows[0] });
+    console.info(`Vaccination soft-deleted id=${id} farm=${farm_id} user=${userId}`);
+    res.json({ message: 'Vaccination archived', data: result.rows[0] });
   } catch (err) {
     console.error('Error deleting vaccination:', err);
     res.status(500).json({ message: 'Server error deleting vaccination', error: err.message });
   }
 };
 
-module.exports = { createVaccination, getVaccinations, updateVaccination, deleteVaccination };
+// Restore vaccination
+const restoreVaccination = async (req, res) => {
+  try {
+    const userId = req.user && req.user.id;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+    const userRes = await db.query('SELECT farm_id FROM users WHERE id = $1', [userId]);
+    const farm_id = userRes.rows[0] && userRes.rows[0].farm_id;
+    if (!farm_id) return res.status(403).json({ message: 'User must belong to a farm' });
+
+    const { id } = req.params;
+    const result = await db.query('UPDATE vaccination SET is_deleted = false, deleted_at = NULL WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'Vaccination not found' });
+    res.json({ message: 'Vaccination restored', data: result.rows[0] });
+  } catch (err) {
+    console.error('Error restoring vaccination:', err);
+    res.status(500).json({ message: 'Server error restoring vaccination', error: err.message });
+  }
+}
+
+module.exports = { createVaccination, getVaccinations, updateVaccination, deleteVaccination, restoreVaccination };

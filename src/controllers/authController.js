@@ -156,4 +156,39 @@ const resetPassword = async (req, res) => {
   }
 };
 
-module.exports = { register, login, changePassword, forgotPassword, resetPassword };
+const verifyPassword = async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    const jwt = require('jsonwebtoken');
+
+    let user = null;
+    if (email) {
+      const r = await db.query('SELECT id, password FROM users WHERE email = $1', [email]);
+      if (r.rowCount === 0) return res.json({ valid: false });
+      user = r.rows[0];
+    } else if (req.headers && req.headers.authorization) {
+      // attempt to parse bearer token
+      const token = req.headers.authorization.replace(/^Bearer\s+/i, '');
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const r = await db.query('SELECT id, password FROM users WHERE id = $1', [decoded.id]);
+        if (r.rowCount === 0) return res.json({ valid: false });
+        user = r.rows[0];
+      } catch (e) {
+        return res.json({ valid: false });
+      }
+    } else {
+      return res.status(400).json({ message: 'email or Authorization token required' });
+    }
+
+    if (!password) return res.status(400).json({ message: 'password is required' });
+
+    const ok = await bcrypt.compare(password, user.password);
+    return res.json({ valid: !!ok });
+  } catch (err) {
+    console.error('Verify password error:', err);
+    res.status(500).json({ message: 'Server error verifying password' });
+  }
+};
+
+module.exports = { register, login, changePassword, forgotPassword, resetPassword, verifyPassword };

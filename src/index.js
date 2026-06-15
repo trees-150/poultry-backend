@@ -42,6 +42,17 @@ app.use('/api/treatment', auth, treatmentRoutes);
 // Notifications
 const notificationRoutes = require('./routes/notificationRoutes');
 app.use('/api/notifications', auth, notificationRoutes);
+// Activity
+const activityRoutes = require('./routes/activityRoutes');
+app.use('/api/activity', auth, activityRoutes);
+
+// Backup endpoints (GET backup, POST restore stub)
+const backupRoutes = require('./routes/backupRoutes');
+app.use('/api/backup', auth, backupRoutes);
+
+// Export endpoints
+const exportRoutes = require('./routes/exportRoutes');
+app.use('/api/export', auth, exportRoutes);
 
 // Basic Route
 app.get('/', (req, res) => {

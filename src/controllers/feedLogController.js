@@ -31,10 +31,14 @@ const createFeedLog = async (req, res) => {
     }
 
     // Validate inventory belongs to farm
-    const invRes = await client.query('SELECT farm_id, quantity_kg FROM feed_inventory WHERE id = $1', [feed_inventory_id]);
+    const invRes = await client.query('SELECT farm_id, quantity_kg, COALESCE(is_deleted,false) as is_deleted FROM feed_inventory WHERE id = $1', [feed_inventory_id]);
     if (invRes.rowCount === 0 || invRes.rows[0].farm_id !== farm_id) {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Feed inventory not found or does not belong to your farm' });
+    }
+    if (invRes.rows[0].is_deleted) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Feed inventory is archived' });
     }
 
     // 1. Insert feed log with farm_id
@@ -59,7 +63,7 @@ const createFeedLog = async (req, res) => {
 
     // After committing, check remaining inventory and create notification if below threshold
     try {
-      const invCheck = await db.query('SELECT quantity_kg, feed_name FROM feed_inventory WHERE id = $1 AND farm_id = $2', [feed_inventory_id, farm_id]);
+      const invCheck = await db.query('SELECT quantity_kg, feed_name, COALESCE(is_deleted,false) as is_deleted FROM feed_inventory WHERE id = $1 AND farm_id = $2', [feed_inventory_id, farm_id]);
       if (invCheck.rowCount > 0) {
         const qtyLeft = Number(invCheck.rows[0].quantity_kg || 0);
         const feedName = invCheck.rows[0].feed_name || 'Feed';
@@ -78,7 +82,7 @@ const createFeedLog = async (req, res) => {
     }
 
     // Fetch the complete log with names to return to the app
-    const fullLogResult = await client.query(`
+      const fullLogResult = await client.query(`
       SELECT
         fl.id,
         fl.flock_id,
@@ -93,8 +97,23 @@ const createFeedLog = async (req, res) => {
       FROM feed_log fl
       JOIN flock f ON fl.flock_id = f.id
       JOIN feed_inventory fi ON fl.feed_inventory_id = fi.id
-      WHERE fl.id = $1 AND fl.farm_id = $2
+      WHERE fl.id = $1 AND fl.farm_id = $2 AND COALESCE(fl.is_deleted,false) = false
     `, [logResult.rows[0].id, farm_id]);
+
+    try {
+      const activity = require('../utils/activity');
+      const userRes = await db.query('SELECT name FROM users WHERE id = $1', [user_id]);
+      const userName = userRes.rowCount > 0 ? userRes.rows[0].name : 'A user';
+      await activity.createActivity({
+        farm_id,
+        user_id,
+        activity_type: 'FEED_USED',
+        title: 'Feed Used',
+        description: `${userName} recorded usage of ${quantity_used}kg of ${fullLogResult.rows[0].feed_name}.`
+      });
+    } catch (e) {
+      console.error('Activity logging failed for feed used:', e);
+    }
 
     res.json(fullLogResult.rows[0]);
 
@@ -122,7 +141,7 @@ const updateFeedLog = async (req, res) => {
     const farm_id = await getUserFarmId(user_id);
     if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
 
-    const oldLogRes = await client.query('SELECT * FROM feed_log WHERE id = $1 AND farm_id = $2', [id, farm_id]);
+    const oldLogRes = await client.query('SELECT * FROM feed_log WHERE id = $1 AND farm_id = $2 AND COALESCE(is_deleted,false)=false', [id, farm_id]);
     if (oldLogRes.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Feed log not found' });
@@ -173,7 +192,7 @@ const deleteFeedLog = async (req, res) => {
     const farm_id = await getUserFarmId(user_id);
     if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
 
-    const logRes = await client.query('SELECT * FROM feed_log WHERE id = $1 AND farm_id = $2', [id, farm_id]);
+    const logRes = await client.query('SELECT * FROM feed_log WHERE id = $1 AND farm_id = $2 AND COALESCE(is_deleted,false)=false', [id, farm_id]);
     if (logRes.rowCount === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Feed log not found' });
@@ -183,7 +202,7 @@ const deleteFeedLog = async (req, res) => {
     // Restore inventory
     await client.query('UPDATE feed_inventory SET quantity_kg = quantity_kg + $1 WHERE id = $2 AND farm_id = $3', [log.quantity_used, log.feed_inventory_id, farm_id]);
 
-    await client.query('DELETE FROM feed_log WHERE id = $1 AND farm_id = $2', [id, farm_id]);
+    await client.query('UPDATE feed_log SET is_deleted = true, deleted_at = NOW() WHERE id = $1 AND farm_id = $2', [id, farm_id]);
 
     await client.query('COMMIT');
     res.json({ message: 'Feed log deleted' });
@@ -220,7 +239,7 @@ const getFeedLogs = async (req, res) => {
         ON fl.flock_id = f.id
       JOIN feed_inventory fi
         ON fl.feed_inventory_id = fi.id
-      WHERE fl.farm_id = $1
+      WHERE fl.farm_id = $1 AND COALESCE(fl.is_deleted,false)=false
       ORDER BY fl.id DESC
     `, [farm_id]);
 
@@ -232,6 +251,69 @@ const getFeedLogs = async (req, res) => {
     });
   }
 };
+
+  const restoreFeedLog = async (req, res) => {
+    const client = await db.pool.connect();
+    try {
+      const user_id = req.user && req.user.id;
+      if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+      const farm_id = await getUserFarmId(user_id);
+      if (!farm_id) return res.status(400).json({ message: 'User does not belong to a farm' });
+
+      const { id } = req.params;
+      await client.query('BEGIN');
+
+      const logRes = await client.query('SELECT * FROM feed_log WHERE id = $1 AND farm_id = $2 AND COALESCE(is_deleted,false)=true FOR UPDATE', [id, farm_id]);
+      if (logRes.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: 'Feed log not found or not archived' });
+      }
+      const log = logRes.rows[0];
+
+      // Lock inventory row and ensure enough quantity to deduct
+      const invRes = await client.query('SELECT quantity_kg, farm_id, COALESCE(is_deleted,false) as is_deleted FROM feed_inventory WHERE id = $1 FOR UPDATE', [log.feed_inventory_id]);
+      if (invRes.rowCount === 0 || invRes.rows[0].farm_id !== farm_id) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Associated feed inventory not found or does not belong to your farm' });
+      }
+      if (invRes.rows[0].is_deleted) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Associated feed inventory is archived' });
+      }
+
+      const currentQty = Number(invRes.rows[0].quantity_kg || 0);
+      const qtyNeeded = Number(log.quantity_used || 0);
+      if (isNaN(qtyNeeded) || qtyNeeded <= 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Invalid feed quantity to restore' });
+      }
+      if (currentQty < qtyNeeded) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Insufficient feed inventory to restore log' });
+      }
+
+      await client.query('UPDATE feed_inventory SET quantity_kg = quantity_kg - $1 WHERE id = $2 AND farm_id = $3', [qtyNeeded, log.feed_inventory_id, farm_id]);
+
+      const upd = await client.query('UPDATE feed_log SET is_deleted = false, deleted_at = NULL WHERE id = $1 AND farm_id = $2 RETURNING *', [id, farm_id]);
+
+      await client.query('COMMIT');
+      res.json({ message: 'Feed log restored', data: upd.rows[0] });
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch (e) {}
+      console.error('Error restoring feed log:', err);
+      res.status(500).json({ message: 'Error restoring feed log', error: err.message });
+    } finally {
+      client.release();
+    }
+  }
+
+  module.exports = {
+    createFeedLog,
+    updateFeedLog,
+    deleteFeedLog,
+    getFeedLogs,
+    restoreFeedLog
+  };
 
 module.exports = {
   createFeedLog,
