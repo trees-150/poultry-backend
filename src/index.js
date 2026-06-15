@@ -9,6 +9,11 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+// Simple health endpoint for connectivity checks (unprotected)
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
+
 // Routes
 // Auth (unprotected)
 app.use('/api/auth', require('./routes/authRoutes'));
