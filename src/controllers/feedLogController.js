@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const notifications = require('../utils/notifications');
 
 // Helper to get user's farm_id
 async function getUserFarmId(user_id) {
@@ -55,6 +56,26 @@ const createFeedLog = async (req, res) => {
     );
 
     await client.query('COMMIT');
+
+    // After committing, check remaining inventory and create notification if below threshold
+    try {
+      const invCheck = await db.query('SELECT quantity_kg, feed_name FROM feed_inventory WHERE id = $1 AND farm_id = $2', [feed_inventory_id, farm_id]);
+      if (invCheck.rowCount > 0) {
+        const qtyLeft = Number(invCheck.rows[0].quantity_kg || 0);
+        const feedName = invCheck.rows[0].feed_name || 'Feed';
+        const lowThreshold = process.env.LOW_FEED_THRESHOLD_KG ? Number(process.env.LOW_FEED_THRESHOLD_KG) : 10;
+        if (!isNaN(lowThreshold) && qtyLeft <= lowThreshold) {
+          await notifications.createNotification({
+            farm_id: farm_id,
+            title: 'Low Feed Stock',
+            message: `${feedName} is low: ${qtyLeft} kg remaining.`,
+            type: 'low_feed'
+          });
+        }
+      }
+    } catch (nerr) {
+      console.error('Error creating low feed notification:', nerr);
+    }
 
     // Fetch the complete log with names to return to the app
     const fullLogResult = await client.query(`

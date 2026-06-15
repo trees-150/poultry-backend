@@ -59,6 +59,24 @@ const createMortality = async (req, res) => {
     await client.query('UPDATE flock SET quantity = quantity - $1 WHERE id = $2 AND farm_id = $3', [qty, flock_id, farm_id]);
 
     await client.query('COMMIT');
+
+    // After commit, check today's mortality total for farm and create alert if threshold exceeded
+    try {
+      const mRes = await db.query('SELECT COALESCE(SUM(quantity),0) AS total FROM mortality WHERE farm_id = $1 AND DATE(date_recorded) = CURRENT_DATE', [farm_id]);
+      const totalToday = Number(mRes.rows[0].total || 0);
+      const mortalityThreshold = process.env.MORTALITY_ALERT_THRESHOLD ? Number(process.env.MORTALITY_ALERT_THRESHOLD) : 5;
+      if (!isNaN(mortalityThreshold) && totalToday >= mortalityThreshold) {
+        await require('../utils/notifications').createNotification({
+          farm_id,
+          title: 'High Mortality Alert',
+          message: `High mortality today: ${totalToday} birds recorded.`,
+          type: 'high_mortality'
+        });
+      }
+    } catch (nerr) {
+      console.error('Error creating mortality notification:', nerr);
+    }
+
     res.json(insertResult.rows[0]);
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}

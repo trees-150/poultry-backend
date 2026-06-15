@@ -73,6 +73,16 @@ const createSale = async (req, res) => {
 
     const row = insertRes.rows[0];
     row.flock_name = flock.name;
+
+    // Create sale notification (farm-wide)
+    try {
+      const notifications = require('../utils/notifications');
+      const msg = `Sale recorded: ${qty} unit(s) from ${flock.name} for ${total_amount}.`;
+      await notifications.createNotification({ farm_id, title: 'Sale Recorded', message: msg, type: 'sale' });
+    } catch (nerr) {
+      console.error('Error creating sale notification:', nerr);
+    }
+
     res.json(row);
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}

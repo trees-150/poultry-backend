@@ -144,6 +144,21 @@ const joinFarm = async (req, res) => {
 
     await client.query('COMMIT');
 
+    // Notify farm members about new member (farm-wide)
+    try {
+      const uRes = await db.query('SELECT name FROM users WHERE id = $1', [user_id]);
+      const userName = (uRes.rowCount > 0 && uRes.rows[0].name) ? uRes.rows[0].name : 'A member';
+      const notifications = require('../utils/notifications');
+      await notifications.createNotification({
+        farm_id: farm.id,
+        title: 'New Farm Member Joined',
+        message: `${userName} joined the farm.`,
+        type: 'member_joined'
+      });
+    } catch (nerr) {
+      console.error('Error creating member joined notification:', nerr);
+    }
+
     return res.json({ message: 'Successfully joined farm', farm_id: farm.id, farm_name: farm.name, role: 'member' });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}

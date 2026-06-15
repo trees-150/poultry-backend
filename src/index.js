@@ -39,6 +39,9 @@ const vaccinationRoutes = require('./routes/vaccinationRoutes');
 app.use('/api/vaccination', auth, vaccinationRoutes);
 const treatmentRoutes = require('./routes/treatmentRoutes');
 app.use('/api/treatment', auth, treatmentRoutes);
+// Notifications
+const notificationRoutes = require('./routes/notificationRoutes');
+app.use('/api/notifications', auth, notificationRoutes);
 
 // Basic Route
 app.get('/', (req, res) => {
