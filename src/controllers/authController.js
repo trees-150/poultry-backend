@@ -57,4 +57,103 @@ const login = async (req, res) => {
   }
 };
 
-module.exports = { register, login };
+const changePassword = async (req, res) => {
+  try {
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'currentPassword and newPassword are required' });
+    }
+
+    // fetch user
+    const result = await db.query('SELECT id, password FROM users WHERE id = $1', [user_id]);
+    if (result.rowCount === 0) return res.status(404).json({ message: 'User not found' });
+
+    const user = result.rows[0];
+    const ok = await bcrypt.compare(currentPassword, user.password);
+    if (!ok) return res.status(401).json({ message: 'Incorrect current password' });
+
+    const hashed = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await db.query('UPDATE users SET password = $1 WHERE id = $2', [hashed, user_id]);
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ message: 'Server error changing password' });
+  }
+};
+
+const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: 'email is required' });
+
+    // find user
+    const result = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (result.rowCount === 0) {
+      // Do not reveal whether user exists; return success for security
+      return res.json({ message: 'If an account exists, password reset instructions will be sent.' });
+    }
+
+    const user = result.rows[0];
+
+    // ensure table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token TEXT NOT NULL,
+        expires_at TIMESTAMP NOT NULL
+      )
+    `);
+
+    const crypto = require('crypto');
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await db.query(
+      'INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)',
+      [user.id, token, expiresAt]
+    );
+
+    // In future: send email with token link. For now just return success.
+    res.json({ message: 'If an account exists, password reset instructions will be sent.' });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ message: 'Server error processing forgot password' });
+  }
+};
+
+const resetPassword = async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) return res.status(400).json({ message: 'token and newPassword are required' });
+
+    // find token
+    const tokenRes = await db.query('SELECT id, user_id, expires_at FROM password_reset_tokens WHERE token = $1', [token]);
+    if (tokenRes.rowCount === 0) return res.status(400).json({ message: 'Invalid or expired token' });
+
+    const row = tokenRes.rows[0];
+    const expiresAt = new Date(row.expires_at);
+    if (expiresAt < new Date()) {
+      // token expired
+      await db.query('DELETE FROM password_reset_tokens WHERE id = $1', [row.id]).catch(() => {});
+      return res.status(400).json({ message: 'Invalid or expired token' });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await db.query('UPDATE users SET password = $1 WHERE id = $2', [hashed, row.user_id]);
+
+    // consume token
+    await db.query('DELETE FROM password_reset_tokens WHERE id = $1', [row.id]);
+
+    res.json({ message: 'Password has been reset successfully' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    res.status(500).json({ message: 'Server error resetting password' });
+  }
+};
+
+module.exports = { register, login, changePassword, forgotPassword, resetPassword };
