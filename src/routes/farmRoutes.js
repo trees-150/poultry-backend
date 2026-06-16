@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { createFarm, getMyFarm, getMyFarms, switchFarm } = require('../controllers/farmController');
+const { createFarm, getMyFarm, getMyFarms, switchFarm, leaveFarm } = require('../controllers/farmController');
 
 // POST /api/farms/create
 router.post('/create', createFarm);
@@ -16,6 +16,9 @@ router.post('/join', require('../controllers/farmController').joinFarm);
 
 // POST /api/farms/switch
 router.post('/switch', switchFarm);
+
+// POST /api/farms/leave
+router.post('/leave', require('../controllers/farmController').leaveFarm);
 
 // GET /api/farms/members
 router.get('/members', require('../controllers/farmController').getFarmMembers);

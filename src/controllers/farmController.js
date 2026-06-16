@@ -206,6 +206,82 @@ const switchFarm = async (req, res) => {
   }
 };
 
+const leaveFarm = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { farm_id } = req.body || {};
+    if (!farm_id) return res.status(400).json({ message: 'farm_id is required' });
+
+    await client.query('BEGIN');
+
+    // ensure farm_members exists
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS farm_members (
+        id SERIAL PRIMARY KEY,
+        farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        UNIQUE(farm_id, user_id)
+      )
+    `);
+
+    // check membership and lock the row
+    const mRes = await client.query('SELECT role FROM farm_members WHERE farm_id = $1 AND user_id = $2 FOR UPDATE', [farm_id, user_id]);
+    if (mRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'User does not belong to the specified farm' });
+    }
+
+    const role = mRes.rows[0].role;
+
+    if (role === 'owner') {
+      // check for other members
+      const others = await client.query('SELECT COUNT(*) AS cnt FROM farm_members WHERE farm_id = $1 AND user_id != $2', [farm_id, user_id]);
+      const cnt = parseInt((others.rows[0] && others.rows[0].cnt) || 0, 10);
+      await client.query('ROLLBACK');
+      if (cnt > 0) {
+        return res.status(400).json({ message: 'Transfer ownership before leaving.' });
+      }
+      return res.status(400).json({ message: 'You are the last member. Delete the farm or transfer ownership before leaving.' });
+    }
+
+    // delete membership
+    await client.query('DELETE FROM farm_members WHERE farm_id = $1 AND user_id = $2', [farm_id, user_id]);
+
+    // if active_farm_id equals the farm being left, switch to another or null
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active_farm_id INTEGER`);
+    const uRes = await client.query('SELECT active_farm_id FROM users WHERE id = $1 FOR UPDATE', [user_id]);
+    const active = (uRes.rowCount > 0) ? uRes.rows[0].active_farm_id : null;
+    if (active === farm_id) {
+      const other = await client.query('SELECT farm_id FROM farm_members WHERE user_id = $1 ORDER BY id LIMIT 1', [user_id]);
+      if (other.rowCount === 0) {
+        await client.query('UPDATE users SET active_farm_id = NULL WHERE id = $1', [user_id]);
+      } else {
+        await client.query('UPDATE users SET active_farm_id = $1 WHERE id = $2', [other.rows[0].farm_id, user_id]);
+      }
+    }
+
+    await client.query('COMMIT');
+
+    // return updated farm count and active farm
+    const countRes = await db.query('SELECT COUNT(*) AS cnt FROM farm_members WHERE user_id = $1', [user_id]);
+    const farms_count = parseInt((countRes.rows[0] && countRes.rows[0].cnt) || 0, 10);
+    const activeRes = await db.query('SELECT active_farm_id FROM users WHERE id = $1', [user_id]);
+    const active_farm_id = (activeRes.rowCount > 0) ? activeRes.rows[0].active_farm_id : null;
+
+    return res.json({ message: 'Left farm successfully', farms_count, active_farm_id });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Error leaving farm:', err);
+    res.status(500).json({ message: 'Server error leaving farm' });
+  } finally {
+    client.release();
+  }
+};
+
 const joinFarm = async (req, res) => {
   const client = await db.pool.connect();
   try {
@@ -321,4 +397,4 @@ const getFarmMembers = async (req, res) => {
   }
 };
 
-module.exports = { createFarm, getMyFarm, getMyFarms, switchFarm, joinFarm, getFarmMembers };
+module.exports = { createFarm, getMyFarm, getMyFarms, switchFarm, joinFarm, getFarmMembers, leaveFarm };
