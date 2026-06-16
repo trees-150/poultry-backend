@@ -39,11 +39,40 @@ const createFarm = async (req, res) => {
         );
         inserted = result.rows[0];
 
-        // set user's farm_id and role = 'owner'
+        // ensure farm_members table exists
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS farm_members (
+            id SERIAL PRIMARY KEY,
+            farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            UNIQUE(farm_id, user_id)
+          )
+        `);
+
+        // insert membership as owner (do not overwrite existing memberships)
         await client.query(
-          `UPDATE users SET farm_id = $1, role = $2 WHERE id = $3`,
-          [inserted.id, 'owner', user_id]
+          `INSERT INTO farm_members (farm_id, user_id, role)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (farm_id, user_id) DO NOTHING`,
+          [inserted.id, user_id, 'owner']
         );
+
+        // set user's active_farm_id and set legacy farm_id/role only if not set
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active_farm_id INTEGER`);
+        const uRes = await client.query('SELECT farm_id FROM users WHERE id = $1 FOR UPDATE', [user_id]);
+        const currentFarmId = (uRes.rowCount > 0) ? uRes.rows[0].farm_id : null;
+        if (currentFarmId === null) {
+          await client.query(
+            `UPDATE users SET farm_id = $1, role = $2, active_farm_id = $1 WHERE id = $3`,
+            [inserted.id, 'owner', user_id]
+          );
+        } else {
+          await client.query(
+            `UPDATE users SET active_farm_id = $1 WHERE id = $2`,
+            [inserted.id, user_id]
+          );
+        }
 
         break;
       } catch (err) {
@@ -107,6 +136,76 @@ const getMyFarm = async (req, res) => {
   }
 };
 
+const getMyFarms = async (req, res) => {
+  try {
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+
+    // ensure farm_members exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS farm_members (
+        id SERIAL PRIMARY KEY,
+        farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        UNIQUE(farm_id, user_id)
+      )
+    `);
+
+    const result = await db.query(
+      `SELECT f.id, f.name, fm.role, f.invite_code
+       FROM farm_members fm
+       JOIN farms f ON fm.farm_id = f.id
+       WHERE fm.user_id = $1
+       ORDER BY f.id ASC`,
+      [user_id]
+    );
+
+    const out = result.rows.map(r => ({ id: r.id, name: r.name, role: r.role, invite_code: r.invite_code }));
+    res.json(out);
+  } catch (err) {
+    console.error('Error fetching my farms:', err);
+    res.status(500).json({ message: 'Server error fetching farms' });
+  }
+};
+
+const switchFarm = async (req, res) => {
+  try {
+    const user_id = req.user && req.user.id;
+    if (!user_id) return res.status(401).json({ message: 'Unauthorized' });
+
+    const { farm_id } = req.body || {};
+    if (!farm_id) return res.status(400).json({ message: 'farm_id is required' });
+
+    // ensure farm_members exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS farm_members (
+        id SERIAL PRIMARY KEY,
+        farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        UNIQUE(farm_id, user_id)
+      )
+    `);
+
+    // verify membership
+    const mRes = await db.query('SELECT role FROM farm_members WHERE farm_id = $1 AND user_id = $2', [farm_id, user_id]);
+    if (mRes.rowCount === 0) {
+      return res.status(403).json({ message: 'User does not belong to the specified farm' });
+    }
+
+    // ensure active_farm_id column
+    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active_farm_id INTEGER`);
+
+    await db.query('UPDATE users SET active_farm_id = $1 WHERE id = $2', [farm_id, user_id]);
+
+    res.json({ message: 'Active farm switched successfully', active_farm_id: farm_id });
+  } catch (err) {
+    console.error('Error switching active farm:', err);
+    res.status(500).json({ message: 'Server error switching farm' });
+  }
+};
+
 const joinFarm = async (req, res) => {
   const client = await db.pool.connect();
   try {
@@ -120,17 +219,6 @@ const joinFarm = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Ensure user does not already belong to a farm
-    const userRes = await client.query('SELECT farm_id FROM users WHERE id = $1 FOR UPDATE', [user_id]);
-    if (userRes.rowCount === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ message: 'User not found' });
-    }
-    if (userRes.rows[0].farm_id) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: 'User already belongs to a farm' });
-    }
-
     // Find farm by invite_code
     const farmRes = await client.query('SELECT id, name FROM farms WHERE invite_code = $1', [invite_code]);
     if (farmRes.rowCount === 0) {
@@ -139,15 +227,49 @@ const joinFarm = async (req, res) => {
     }
     const farm = farmRes.rows[0];
 
-    // Set user's farm_id and role = 'member'
-    await client.query('UPDATE users SET farm_id = $1, role = $2 WHERE id = $3', [farm.id, 'member', user_id]);
+    // ensure farm_members table exists
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS farm_members (
+        id SERIAL PRIMARY KEY,
+        farm_id INTEGER NOT NULL REFERENCES farms(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        UNIQUE(farm_id, user_id)
+      )
+    `);
+
+    // Try to insert membership; if exists, return message
+    const insertRes = await client.query(
+      `INSERT INTO farm_members (farm_id, user_id, role)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (farm_id, user_id) DO NOTHING
+       RETURNING id`,
+      [farm.id, user_id, 'member']
+    );
+
+    if (insertRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(200).json({ message: 'Already a member of this farm' });
+    }
+
+    // ensure active_farm_id column exists and set it to joined farm
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active_farm_id INTEGER`);
+    const uRes = await client.query('SELECT farm_id FROM users WHERE id = $1 FOR UPDATE', [user_id]);
+    const currentFarmId = (uRes.rowCount > 0) ? uRes.rows[0].farm_id : null;
+
+    if (currentFarmId === null) {
+      // legacy behaviour: set farm_id and role only if unset
+      await client.query('UPDATE users SET farm_id = $1, role = $2, active_farm_id = $1 WHERE id = $3', [farm.id, 'member', user_id]);
+    } else {
+      await client.query('UPDATE users SET active_farm_id = $1 WHERE id = $2', [farm.id, user_id]);
+    }
 
     await client.query('COMMIT');
 
     // Notify farm members about new member (farm-wide)
     try {
-      const uRes = await db.query('SELECT name FROM users WHERE id = $1', [user_id]);
-      const userName = (uRes.rowCount > 0 && uRes.rows[0].name) ? uRes.rows[0].name : 'A member';
+      const uRes2 = await db.query('SELECT name FROM users WHERE id = $1', [user_id]);
+      const userName = (uRes2.rowCount > 0 && uRes2.rows[0].name) ? uRes2.rows[0].name : 'A member';
       const notifications = require('../utils/notifications');
       await notifications.createNotification({
         farm_id: farm.id,
@@ -199,4 +321,4 @@ const getFarmMembers = async (req, res) => {
   }
 };
 
-module.exports = { createFarm, getMyFarm, joinFarm, getFarmMembers };
+module.exports = { createFarm, getMyFarm, getMyFarms, switchFarm, joinFarm, getFarmMembers };
