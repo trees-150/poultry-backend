@@ -5,6 +5,11 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Warn if JWT_SECRET is default — helps catch env misconfiguration that can cause auth issues
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'change_this_secret') {
+  console.warn('WARNING: JWT_SECRET is not set or is using the default. Set JWT_SECRET in your environment to a secure value.');
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json());

@@ -9,9 +9,12 @@ const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret';
 const JWT_RESET_SECRET = process.env.JWT_RESET_SECRET || (process.env.JWT_SECRET || 'change_this_secret');
 const SALT_ROUNDS = 10;
 
+const normalizeEmail = (e) => (typeof e === 'string' ? e.trim().toLowerCase() : e);
+
 const register = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email: rawEmail, password } = req.body;
+    const email = normalizeEmail(rawEmail);
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'name, email and password are required' });
     }
@@ -37,7 +40,8 @@ const register = async (req, res) => {
 
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email: rawEmail, password } = req.body;
+    const email = normalizeEmail(rawEmail);
     if (!email || !password) {
       return res.status(400).json({ message: 'email and password are required' });
     }
@@ -90,7 +94,8 @@ const changePassword = async (req, res) => {
 
 const forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email: rawEmail } = req.body || {};
+    const email = normalizeEmail(rawEmail);
     if (!email) return res.status(400).json({ message: 'email is required' });
 
     // find user; do not reveal existence to caller
@@ -137,7 +142,8 @@ const forgotPassword = async (req, res) => {
 
 const verifyOtp = async (req, res) => {
   try {
-    const { email, otp } = req.body || {};
+    const { email: rawEmail, otp } = req.body || {};
+    const email = normalizeEmail(rawEmail);
     if (!email || !otp) return res.status(400).json({ message: 'email and otp are required' });
 
     // find latest non-used OTP for email
@@ -181,7 +187,7 @@ const resetPassword = async (req, res) => {
       return res.status(400).json({ message: 'Invalid or expired reset token' });
     }
 
-    const email = payload.email;
+    const email = normalizeEmail(payload.email);
     if (!email) return res.status(400).json({ message: 'Invalid reset token' });
 
     // find user
@@ -210,7 +216,8 @@ const verifyPassword = async (req, res) => {
 
     let user = null;
     if (email) {
-      const r = await db.query('SELECT id, password FROM users WHERE email = $1', [email]);
+      const normalized = normalizeEmail(email);
+      const r = await db.query('SELECT id, password FROM users WHERE email = $1', [normalized]);
       if (r.rowCount === 0) return res.json({ valid: false });
       user = r.rows[0];
     } else if (req.headers && req.headers.authorization) {
