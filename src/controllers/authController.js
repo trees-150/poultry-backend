@@ -238,4 +238,4 @@ const verifyPassword = async (req, res) => {
   }
 };
 
-module.exports = { register, login, changePassword, forgotPassword, resetPassword, verifyPassword };
+module.exports = { register, login, changePassword, forgotPassword, verifyPassword, verifyOtp, resetPassword };
